@@ -33,6 +33,9 @@ patch_vbmeta_flag=auto
 # Import functions/variables and setup patching
 . tools/ak3-core.sh
 
+# Set home directory (AnyKernel working directory)
+home=$(pwd)
+
 ## Deep cleanup - removes ALL traces of previous kernel
 deep_kernel_cleanup() {
     ui_print "→ Cleaning old kernel configs..."
@@ -260,13 +263,31 @@ check_kernel_version() {
     current_kernel=$(uname -r 2>/dev/null | cut -d'.' -f1-2)
     [ -z "$current_kernel" ] && current_kernel="unknown"
 
-    new_kernel_string=$(strings "$home"/Image* 2>/dev/null | grep -m1 'Linux version' | awk '{print $3}' | cut -d'.' -f1-2)
+    # Check if kernel image exists in AnyKernel directory
+    kernel_img=""
+    for img in "$home"/Image "$home"/Image.gz "$home"/Image.lz4 "$home"/Image-dtb "$home"/Image.gz-dtb; do
+        if [ -f "$img" ]; then
+            kernel_img="$img"
+            break
+        fi
+    done
+
+    if [ -z "$kernel_img" ]; then
+        ui_print "  ✗ ERROR: Kernel image not found in zip"
+        ui_print "  Expected: Image or Image.gz or Image.lz4"
+        ls -la "$home"/ | grep -i image || true
+        exit 1
+    fi
+
+    # Try to detect kernel version from image
+    new_kernel_string=$(strings "$kernel_img" 2>/dev/null | grep -m1 'Linux version' | awk '{print $3}' | cut -d'.' -f1-2)
     [ -z "$new_kernel_string" ] && new_kernel_string="5.10"
 
     new_major=$(echo "$new_kernel_string" | cut -d'.' -f1)
     new_minor=$(echo "$new_kernel_string" | cut -d'.' -f2)
 
     ui_print "→ Version: $current_kernel → $new_kernel_string"
+    ui_print "  Image: $(basename $kernel_img)"
 
     if [ "$new_major" != "5" ] || [ "$new_minor" != "10" ]; then
         ui_print "  ✗ ERROR: Requires GKI 5.10 kernel"
@@ -277,22 +298,28 @@ check_kernel_version() {
 
 ## Post-install validation
 post_install_check() {
-    if [ -f "$home/Image" ] || [ -f "$home/Image.gz" ] || [ -f "$home/Image.lz4" ]; then
-        for img in "$home"/Image*; do
-            [ -f "$img" ] || continue
+    ui_print "→ Validating installation..."
 
+    # Check if any kernel image exists in AnyKernel directory
+    kernel_found=0
+    for img in "$home"/Image "$home"/Image.gz "$home"/Image.lz4 "$home"/Image-dtb "$home"/Image.gz-dtb; do
+        if [ -f "$img" ]; then
             kernel_size=$(stat -c%s "$img" 2>/dev/null || echo 0)
             kernel_mb=$((kernel_size / 1048576))
 
             if [ "$kernel_size" -gt 5242880 ]; then
-                ui_print "  ✓ Kernel image: ${kernel_mb}MB"
-                return 0
+                ui_print "  ✓ Kernel: $(basename $img) (${kernel_mb}MB)"
+                kernel_found=1
+                break
             fi
-        done
+        fi
+    done
 
-        ui_print "  ! Warning: Kernel size abnormal"
-    else
-        ui_print "  ✗ ERROR: Kernel image not found"
+    if [ "$kernel_found" -eq 0 ]; then
+        ui_print "  ✗ ERROR: No valid kernel image found"
+        ui_print "  Installation may have failed"
+        ui_print "  Files in zip:"
+        ls -lh "$home"/ | grep -E "Image|\.ko$" || ls -lh "$home"/
         exit 1
     fi
 }
