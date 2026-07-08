@@ -260,14 +260,17 @@ backup_boot_image() {
 
 ## Version check
 check_kernel_version() {
-    current_kernel=$(uname -r 2>/dev/null | cut -d'.' -f1-2)
+    current_kernel=$(uname -r 2>/dev/null | cut -d'-' -f1 | cut -d'.' -f1-2)
     [ -z "$current_kernel" ] && current_kernel="unknown"
+
+    ui_print "→ Checking kernel image..."
 
     # Check if kernel image exists in AnyKernel directory
     kernel_img=""
     for img in "$home"/Image "$home"/Image.gz "$home"/Image.lz4 "$home"/Image-dtb "$home"/Image.gz-dtb; do
         if [ -f "$img" ]; then
             kernel_img="$img"
+            ui_print "  ✓ Found: $(basename $img)"
             break
         fi
     done
@@ -275,22 +278,47 @@ check_kernel_version() {
     if [ -z "$kernel_img" ]; then
         ui_print "  ✗ ERROR: Kernel image not found in zip"
         ui_print "  Expected: Image or Image.gz or Image.lz4"
-        ls -la "$home"/ | grep -i image || true
+        ui_print "  Files in directory:"
+        ls -la "$home"/ 2>/dev/null | grep -i image || ls -la "$home"/
+        exit 1
+    fi
+
+    # Get file size
+    kernel_size=$(stat -c%s "$kernel_img" 2>/dev/null || echo 0)
+    kernel_mb=$((kernel_size / 1048576))
+    ui_print "  Size: ${kernel_mb}MB"
+
+    if [ "$kernel_size" -lt 5242880 ]; then
+        ui_print "  ✗ ERROR: Kernel image too small (< 5MB)"
         exit 1
     fi
 
     # Try to detect kernel version from image
-    new_kernel_string=$(strings "$kernel_img" 2>/dev/null | grep -m1 'Linux version' | awk '{print $3}' | cut -d'.' -f1-2)
-    [ -z "$new_kernel_string" ] && new_kernel_string="5.10"
+    version_line=$(strings "$kernel_img" 2>/dev/null | grep -E "^Linux version [0-9]" | head -1)
+
+    if [ -n "$version_line" ]; then
+        # Extract version: "Linux version 5.10.260-Templar..." -> "5.10.260"
+        full_version=$(echo "$version_line" | awk '{print $3}' | cut -d'-' -f1)
+        new_kernel_string=$(echo "$full_version" | cut -d'.' -f1-2)
+
+        ui_print "  Kernel: $full_version"
+    else
+        # Fallback: assume 5.10 if string not found
+        ui_print "  ! Version string not found, assuming 5.10"
+        new_kernel_string="5.10"
+    fi
 
     new_major=$(echo "$new_kernel_string" | cut -d'.' -f1)
     new_minor=$(echo "$new_kernel_string" | cut -d'.' -f2)
 
-    ui_print "→ Version: $current_kernel → $new_kernel_string"
-    ui_print "  Image: $(basename $kernel_img)"
+    ui_print "→ Version check: $current_kernel → $new_kernel_string"
 
-    if [ "$new_major" != "5" ] || [ "$new_minor" != "10" ]; then
+    # Validate GKI 5.10
+    if [ "$new_major" = "5" ] && [ "$new_minor" = "10" ]; then
+        ui_print "  ✓ GKI 5.10 kernel detected"
+    else
         ui_print "  ✗ ERROR: Requires GKI 5.10 kernel"
+        ui_print "  Detected: $new_major.$new_minor"
         ui_print "  This kernel is for Android 11+ GKI 5.10 only"
         exit 1
     fi
